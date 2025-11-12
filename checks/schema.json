@@ -1,0 +1,22 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "type":"object",
+  "required":["version","os","mode","checks"],
+  "properties":{
+    "version":{"type":"string"},
+    "os":{"type":"string","enum":["windows"]},
+    "mode":{"type":"string","enum":["baseline"]},
+    "checks":{
+      "type":"array",
+      "items":{
+        "type":"object",
+        "required":["id","title","severity"],
+        "properties":{
+          "id":{"type":"string"},
+          "title":{"type":"string"},
+          "severity":{"type":"string","enum":["low","medium","high"]}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "version": "0.1.0",
+  "os": "windows",
+  "mode": "baseline",
+  "checks": [
+    {"id":"os_build","title":"OS build and patch age","severity":"medium"},
+    {"id":"firewall_profile","title":"Firewall enabled and default inbound deny","severity":"high"},
+    {"id":"rdp_nla","title":"RDP disabled or requires NLA","severity":"high"},
+    {"id":"listening_ports","title":"Listening ports summary","severity":"medium"},
+    {"id":"local_admins","title":"Local Administrators group review","severity":"high"},
+    {"id":"defender_state","title":"Defender real-time and signatures current","severity":"high"},
+    {"id":"smb1_disabled","title":"SMBv1 disabled","severity":"high"},
+    {"id":"llmnr_netbios","title":"LLMNR and NetBIOS over TCP","severity":"medium"},
+    {"id":"screen_lock","title":"Screen lock timeout present","severity":"low"},
+    {"id":"time_sync","title":"Time sync service running","severity":"low"}
+  ]
+}
