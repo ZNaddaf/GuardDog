@@ -1,0 +1,4 @@
+/dist/
+/*.iso
+/*.sig
+/SHA256SUMS
