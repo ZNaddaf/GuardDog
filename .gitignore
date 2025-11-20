@@ -2,3 +2,20 @@
 /*.iso
 /*.sig
 /SHA256SUMS
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.env
+.pytest_cache/
+
+# Build artifacts
+dist/
+build/
