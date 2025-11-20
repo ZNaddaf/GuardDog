@@ -1,18 +1,31 @@
-name: build
+name: CI
+
 on:
   push:
     branches: [ main ]
   pull_request:
+    branches: [ main ]
+
 jobs:
-  build:
+  test-windows:
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Build
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
         run: |
-          echo "stub build; wire up later"
-      - name: Test
+          python -m pip install --upgrade pip
+          pip install pytest
+
+      - name: Run tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}\src
         run: |
-          echo "stub tests"
+          python -m pytest
