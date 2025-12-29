@@ -146,20 +146,6 @@ The HTML report renders one section per check with this data.
 
 ---
 
-## What GuardDog does **not** do (MVP)
-
-- Does **not**:
-  - Modify registry or system settings.
-  - Install drivers, services, or scheduled tasks.
-  - Open any network connections or contact remote servers.
-  - Require administrative privileges for the basic checks.
-
-- Current repo does **not yet**:
-  - Bundle a production `GuardDog.exe` (no build script here yet).
-  - Ship ISO images, manifests, or signed checksums.
-
----
-
 ## Development (from source)
 
 GuardDog is currently implemented in Python with a small test suite using `pytest`.
