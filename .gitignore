@@ -19,3 +19,7 @@ venv/
 # Build artifacts
 dist/
 build/
+
+# GuardDog generated reports
+reports/
+*.html
