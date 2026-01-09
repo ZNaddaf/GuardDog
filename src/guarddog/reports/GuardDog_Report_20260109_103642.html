@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'>
+  <title>GuardDog Security Check Report</title>
+  <style>
+        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+               margin: 2rem; background: #fdfdfd; color: #222; }
+        h1 { margin-bottom: 0.25rem; }
+        .meta { color: #666; font-size: 0.9rem; margin-bottom: 1.5rem; }
+        .summary { margin-bottom: 1.5rem; padding: 1rem; border-radius: 0.5rem; }
+        .summary-OK { background: #e8f5e9; border: 1px solid #c8e6c9; }
+        .summary-WARN { background: #fff8e1; border: 1px solid #ffe082; }
+        .summary-HIGH { background: #ffebee; border: 1px solid #ef9a9a; }
+        .summary-UNKNOWN { background: #eceff1; border: 1px solid #cfd8dc; }
+        .checks { display: flex; flex-direction: column; gap: 1rem; }
+        .check { padding: 1rem; border-radius: 0.5rem; border: 1px solid #ddd; background: #fff; }
+        .check h2 { margin-top: 0; margin-bottom: 0.25rem; }
+        .check-status { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .status-badge-OK { color: #2e7d32; }
+        .status-badge-WARN { color: #f9a825; }
+        .status-badge-HIGH { color: #c62828; }
+        .status-badge-UNKNOWN { color: #455a64; }
+        .check-summary { margin: 0.5rem 0; }
+        .check-section-title { font-weight: 600; margin-top: 0.75rem; margin-bottom: 0.25rem; }
+        .check-section-body { margin-top: 0; margin-bottom: 0; }
+        pre.evidence {
+            background: #f7f7f7;
+            border: 1px solid #e0e0e0;
+            padding: 0.75rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+  <h1>GuardDog Security Check Report</h1>
+  <div class='meta'>Generated at 2026-01-09 10:36:42</div>
+  <div class='summary summary-WARN'>
+    <p>GuardDog found some things that could be improved to make this computer safer.</p>
+  </div>
+  <div class='checks'>
+    <section class='check'>
+      <h2>Windows Firewall</h2>
+      <div class='check-status status-badge-OK'>Status: OK</div>
+      <p class='check-summary'>Windows Firewall is turned ON for all network profiles.</p>
+      <div class='check-section-title'>Details</div>
+      <pre class='evidence'>- Domain profile: ON
+- Private profile: ON
+- Public profile: ON</pre>
+      <div class='check-section-title'>What you can do</div>
+      <p class='check-section-body'>No action needed. Windows Firewall appears to be ON for all profiles.</p>
+    </section>
+    <section class='check'>
+      <h2>Remote Desktop (RDP)</h2>
+      <div class='check-status status-badge-OK'>Status: OK</div>
+      <p class='check-summary'>Remote Desktop is turned OFF. This reduces the risk of remote logins to this computer.</p>
+      <div class='check-section-title'>Details</div>
+      <pre class='evidence'>Data source: registry
+- Remote Desktop connections: DISABLED
+- Network Level Authentication (NLA): REQUIRED
+- Security layer (supporting): TLS/SSL (2)</pre>
+      <div class='check-section-title'>What you can do</div>
+      <p class='check-section-body'>No urgent action needed. If you do not need Remote Desktop, you can turn it off in Settings → System → Remote Desktop.</p>
+    </section>
+    <section class='check'>
+      <h2>Microsoft Defender</h2>
+      <div class='check-status status-badge-OK'>Status: OK</div>
+      <p class='check-summary'>Microsoft Defender real-time protection appears to be turned ON (it is not marked as disabled in local or policy settings).</p>
+      <div class='check-section-title'>Details</div>
+      <pre class='evidence'>- Local setting: real-time protection is NOT disabled.
+- Policy: real-time protection policy status is UNKNOWN.
+- Data source: powershell</pre>
+      <div class='check-section-title'>What you can do</div>
+      <p class='check-section-body'>No action needed. You can confirm this in Windows Security → &#x27;Virus &amp; threat protection&#x27;.</p>
+    </section>
+    <section class='check'>
+      <h2>Local Administrators</h2>
+      <div class='check-status status-badge-WARN'>Status: WARN</div>
+      <p class='check-summary'>One or more local user accounts have administrator rights on this computer.</p>
+      <div class='check-section-title'>Details</div>
+      <pre class='evidence'>The following accounts have administrator rights on this computer:
+- HK-49\Administrator (built-in local account)
+- HK-49\znadd (local user account)
+
+Data source: powershell</pre>
+      <div class='check-section-title'>What you can do</div>
+      <p class='check-section-body'>Review the local user accounts listed here that have administrator rights. If you do not recognize an account, or if a day-to-day account has admin rights, consider removing those rights. It is safer to use a standard (non-admin) account for everyday work and a separate admin account only when needed.</p>
+    </section>
+    <section class='check'>
+      <h2>Screen Lock</h2>
+      <div class='check-status status-badge-WARN'>Status: WARN</div>
+      <p class='check-summary'>Automatic screen lock appears to be enabled, but some details (timeout or password requirement) could not be confirmed.</p>
+      <div class='check-section-title'>Details</div>
+      <pre class='evidence'>- Automatic screen lock: ENABLED (screen saver active).
+- Require password on resume: UNKNOWN.
+- Idle timeout before lock: UNKNOWN (could not read a valid timeout).</pre>
+      <div class='check-section-title'>What you can do</div>
+      <p class='check-section-body'>Consider shortening the idle time before the screen locks, and make sure a password is required when you wake it. On Windows 10/11, open Settings → Accounts → Sign-in options (or &#x27;Lock screen&#x27; settings) and look for options related to &#x27;If you&#x27;ve been away, when should Windows require you to sign in again?&#x27;.</p>
+    </section>
+  </div>
+</body>
+</html>

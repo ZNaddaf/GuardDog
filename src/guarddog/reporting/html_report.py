@@ -7,17 +7,29 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Mapping, Any, Tuple
+import html
+
+
+def _esc(value: Any) -> str:
+    return html.escape("" if value is None else str(value), quote=True)
 
 
 def classify_overall_status(check_results: Iterable[Mapping[str, Any]]) -> Tuple[str, str]:
     """
     Given all check results, decide an overall status and a short summary message.
 
-    Status priority:
-        HIGH > WARN > OK > UNKNOWN
+    Status priority (recommended):
+        HIGH > WARN > UNKNOWN > OK
+
+    Rationale:
+        - If anything is HIGH, user should act.
+        - WARN means improvements.
+        - UNKNOWN means we couldn't verify something important (restricted env, parsing issues).
+        - OK only when everything relevant is verified OK (or there are no checks).
     """
     has_high = False
     has_warn = False
+    has_unknown = False
     has_ok = False
 
     for result in check_results:
@@ -28,27 +40,18 @@ def classify_overall_status(check_results: Iterable[Mapping[str, Any]]) -> Tuple
             has_warn = True
         elif status == "OK":
             has_ok = True
+        else:
+            has_unknown = True
 
-    # Decide overall label and message
     if has_high:
-        return (
-            "HIGH",
-            "GuardDog found some important security issues that you should fix soon.",
-        )
+        return ("HIGH", "GuardDog found some important security issues that you should fix soon.")
     if has_warn:
-        return (
-            "WARN",
-            "GuardDog found some things that could be improved to make this computer safer.",
-        )
+        return ("WARN", "GuardDog found some things that could be improved to make this computer safer.")
+    if has_unknown:
+        return ("UNKNOWN", "GuardDog could not verify everything. Some checks were blocked or unclear.")
     if has_ok:
-        return (
-            "OK",
-            "GuardDog did not find any obvious high-risk issues in the checks it ran.",
-        )
-    return (
-        "UNKNOWN",
-        "GuardDog could not complete its checks yet (this may be a preview or test build).",
-    )
+        return ("OK", "GuardDog did not find any obvious high-risk issues in the checks it ran.")
+    return ("UNKNOWN", "GuardDog did not run any checks.")
 
 
 def build_report_html(check_results: Iterable[Mapping[str, Any]]) -> str:
@@ -56,11 +59,10 @@ def build_report_html(check_results: Iterable[Mapping[str, Any]]) -> str:
     Build a complete HTML document as a string from the given check results.
     This HTML is self-contained (inline CSS, no external scripts or styles).
     """
-    check_results = list(check_results)  # May be a generator; we need to iterate twice.
+    check_results = list(check_results)
     overall_status, overall_message = classify_overall_status(check_results)
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Basic inline CSS; we can tweak visuals later.
     css = """
         body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
                margin: 2rem; background: #fdfdfd; color: #222; }
@@ -82,6 +84,17 @@ def build_report_html(check_results: Iterable[Mapping[str, Any]]) -> str:
         .check-summary { margin: 0.5rem 0; }
         .check-section-title { font-weight: 600; margin-top: 0.75rem; margin-bottom: 0.25rem; }
         .check-section-body { margin-top: 0; margin-bottom: 0; }
+        pre.evidence {
+            background: #f7f7f7;
+            border: 1px solid #e0e0e0;
+            padding: 0.75rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+            font-size: 0.9rem;
+        }
     """
 
     html_lines = [
@@ -94,9 +107,9 @@ def build_report_html(check_results: Iterable[Mapping[str, Any]]) -> str:
         "</head>",
         "<body>",
         "  <h1>GuardDog Security Check Report</h1>",
-        f"  <div class='meta'>Generated at {generated_at}</div>",
-        f"  <div class='summary summary-{overall_status}'>",
-        f"    <p>{overall_message}</p>",
+        f"  <div class='meta'>Generated at {_esc(generated_at)}</div>",
+        f"  <div class='summary summary-{_esc(overall_status)}'>",
+        f"    <p>{_esc(overall_message)}</p>",
         "  </div>",
         "  <div class='checks'>",
     ]
@@ -109,41 +122,29 @@ def build_report_html(check_results: Iterable[Mapping[str, Any]]) -> str:
         remediation = result.get("remediation", "")
 
         html_lines.append("    <section class='check'>")
-        html_lines.append(f"      <h2>{title}</h2>")
+        html_lines.append(f"      <h2>{_esc(title)}</h2>")
         html_lines.append(
-            f"      <div class='check-status status-badge-{status}'>Status: {status}</div>"
+            f"      <div class='check-status status-badge-{_esc(status)}'>Status: {_esc(status)}</div>"
         )
 
         if summary:
-            html_lines.append(f"      <p class='check-summary'>{summary}</p>")
+            html_lines.append(f"      <p class='check-summary'>{_esc(summary)}</p>")
 
         if details:
             html_lines.append("      <div class='check-section-title'>Details</div>")
-            html_lines.append(f"      <p class='check-section-body'>{details}</p>")
+            html_lines.append(f"      <pre class='evidence'>{_esc(details)}</pre>")
 
         if remediation:
             html_lines.append("      <div class='check-section-title'>What you can do</div>")
-            html_lines.append(f"      <p class='check-section-body'>{remediation}</p>")
+            html_lines.append(f"      <p class='check-section-body'>{_esc(remediation)}</p>")
 
         html_lines.append("    </section>")
 
-    html_lines.extend(
-        [
-            "  </div>",  # .checks
-            "</body>",
-            "</html>",
-        ]
-    )
+    html_lines.extend(["  </div>", "</body>", "</html>"])
     return "\n".join(html_lines)
 
 
 def default_report_path(base_dir: Path) -> Path:
-    """
-    Given the directory where GuardDog.exe (or the Python entry script) lives,
-    return a path under `reports/` for the HTML report.
-
-    The filename includes a timestamp to avoid overwriting previous reports.
-    """
     reports_dir = base_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
 

@@ -1,36 +1,31 @@
 """Microsoft Defender antivirus / real-time protection checks.
 
-This check inspects Microsoft Defender status to determine whether real-time
-protection is enabled or disabled.
+Goal:
+- Non-admin, read-only.
+- Determine whether Microsoft Defender real-time protection is enabled.
 
-It prefers using the Defender PowerShell cmdlet:
+Primary method:
+- PowerShell: Get-MpComputerStatus (most accurate when available)
 
-    Get-MpComputerStatus | Select-Object -Property AMServiceEnabled, RealTimeProtectionEnabled
+Fallback method:
+- Registry heuristic: DisableRealtimeMonitoring flags (best-effort only)
 
-If that fails (e.g. Defender module not present), it falls back to checking
-registry values:
-
-- HKLM\\SOFTWARE\\Microsoft\\Windows Defender\\Real-Time Protection\\DisableRealtimeMonitoring
-- HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection\\DisableRealtimeMonitoring
-
-Values (typical):
-
-    0 = real-time monitoring is NOT disabled (i.e., ON)
-    1 = real-time monitoring is disabled (i.e., OFF)
-
-This is a non-admin, read-only check.
+Important:
+- Registry flags are not always a perfect reflection of the effective state on modern Windows.
+- For MVP, we treat registry as a fallback indicator only.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Tuple, Optional
 
 try:
     import winreg  # type: ignore[attr-defined]
-except ImportError:  # pragma: no cover - should exist on Windows
+except ImportError:  # pragma: no cover
     winreg = None  # type: ignore[assignment]
 
 
@@ -41,22 +36,84 @@ VALUE_NAME = "DisableRealtimeMonitoring"
 
 @dataclass
 class DefenderState:
-    """Container for Defender real-time protection status."""
+    # Core fields (tests already use these)
+    disabled_local: bool | None
+    disabled_policy: bool | None
 
-    disabled_local: bool | None   # True/False if known, None if unknown/missing
-    disabled_policy: bool | None  # True/False if known, None if unknown/missing
+    # Optional hints (defaults keep tests lightweight)
+    am_service_enabled: bool | None = None
+    antivirus_enabled: bool | None = None
+    rtp_enabled: bool | None = None
+
+    # Optional metadata (defaults)
+    data_source: str = "none"
+    error: str | None = None
+
+
+def _find_powershell_exe() -> str:
+    windir = os.environ.get("WINDIR", r"C:\Windows")
+    candidate = os.path.join(windir, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    if os.path.isfile(candidate):
+        return candidate
+    return "powershell"
+
+
+def _run_powershell_json(script: str, timeout_seconds: int = 8) -> str | None:
+    ps_exe = _find_powershell_exe()
+    wrapped = (
+        "$ErrorActionPreference = 'Stop'; "
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+        + script
+    )
+    cmd = [ps_exe, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", wrapped]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            stdin=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        return None
+
+    if proc.returncode != 0:
+        return None
+
+    out = proc.stdout.strip()
+    return out if out else None
+
+
+def _query_defender_powershell() -> dict | None:
+    ps_script = r"""
+    $obj = Get-MpComputerStatus | Select-Object -Property `
+      AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled
+    $obj | ConvertTo-Json -Compress
+    """.strip()
+
+    out = _run_powershell_json(ps_script)
+    if not out:
+        return None
+
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+
+    if isinstance(data, list):
+        if not data:
+            return None
+        data = data[0]
+
+    return data if isinstance(data, dict) else None
 
 
 def _read_registry_dword(root, subkey: str, value_name: str) -> int | None:
-    """
-    Helper: read a REG_DWORD value from HKLM.
-
-    Returns:
-        int value, or None if the key/value is missing or cannot be read.
-    """
     if winreg is None:
         return None
-
     try:
         with winreg.OpenKey(root, subkey, 0, winreg.KEY_READ) as key:
             value, reg_type = winreg.QueryValueEx(key, value_name)
@@ -67,106 +124,65 @@ def _read_registry_dword(root, subkey: str, value_name: str) -> int | None:
         return None
 
 
-def _query_defender_powershell() -> dict | None:
-    """
-    Try to query Defender status using the Get-MpComputerStatus PowerShell cmdlet.
-
-    Returns:
-        dict with keys like "AMServiceEnabled" and "RealTimeProtectionEnabled",
-        or None if the command is not available or fails.
-
-    This is a non-admin, read-only query.
-    """
-    cmd = [
-        "powershell",
-        "-NoProfile",
-        "-Command",
-        (
-            "(Get-MpComputerStatus | "
-            "Select-Object -Property AMServiceEnabled,RealTimeProtectionEnabled) "
-            "| ConvertTo-Json -Compress"
-        ),
-    ]
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
-            timeout=5,
-        )
-    except Exception:
-        return None
-
-    if proc.returncode != 0:
-        return None
-
-    stdout = proc.stdout.strip()
-    if not stdout:
-        return None
-
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError:
-        return None
-
-    # ConvertTo-Json can return an object or an array with one element.
-    if isinstance(data, list):
-        if not data:
-            return None
-        data = data[0]
-
-    if not isinstance(data, dict):
-        return None
-
-    return data
-
-
 def _get_defender_state() -> DefenderState:
-    """
-    Read Defender state using PowerShell first, then registry fallback.
-
-    DisableRealtimeMonitoring (registry):
-        0 -> real-time protection NOT disabled (ON)
-        1 -> real-time protection disabled (OFF)
-    """
-    # 1) Try PowerShell (preferred, more accurate on modern Windows).
+    # 1) PowerShell path (preferred)
     data = _query_defender_powershell()
     if data is not None:
-        # If PowerShell gives us booleans, we can map them directly.
-        rtp_enabled = data.get("RealTimeProtectionEnabled")
-        # We treat "False" (or false) as "disabled", True as "not disabled".
+        rtp = data.get("RealTimeProtectionEnabled")
+        ams = data.get("AMServiceEnabled")
+        av = data.get("AntivirusEnabled")
+
+        rtp_enabled = rtp if isinstance(rtp, bool) else None
+        am_service_enabled = ams if isinstance(ams, bool) else None
+        antivirus_enabled = av if isinstance(av, bool) else None
+
         disabled_local: bool | None
-        if isinstance(rtp_enabled, bool):
-            disabled_local = not rtp_enabled
+        if rtp_enabled is True:
+            disabled_local = False
+        elif rtp_enabled is False:
+            disabled_local = True
         else:
             disabled_local = None
 
-        # We don't get explicit policy info from this call, so leave as None.
         return DefenderState(
             disabled_local=disabled_local,
             disabled_policy=None,
+            am_service_enabled=am_service_enabled,
+            antivirus_enabled=antivirus_enabled,
+            rtp_enabled=rtp_enabled,
+            data_source="powershell",
+            error=None,
         )
 
-    # 2) Fallback: registry-based heuristic (older approach).
+    # 2) Registry fallback (heuristic)
     if winreg is None:
-        return DefenderState(disabled_local=None, disabled_policy=None)
+        return DefenderState(
+            disabled_local=None,
+            disabled_policy=None,
+            am_service_enabled=None,
+            antivirus_enabled=None,
+            rtp_enabled=None,
+            data_source="none",
+            error="winreg unavailable (not running on Windows Python).",
+        )
 
     root = winreg.HKEY_LOCAL_MACHINE
-
     local_val = _read_registry_dword(root, BASE_KEY_PATH, VALUE_NAME)
     policy_val = _read_registry_dword(root, POLICY_KEY_PATH, VALUE_NAME)
 
     def interp(v: int | None) -> bool | None:
         if v is None:
             return None
-        # 1 -> disabled; 0 -> not disabled
-        return v == 1
+        return v == 1  # 1 -> disabled, 0 -> not disabled
 
     return DefenderState(
         disabled_local=interp(local_val),
         disabled_policy=interp(policy_val),
+        am_service_enabled=None,
+        antivirus_enabled=None,
+        rtp_enabled=None,
+        data_source="registry",
+        error=None,
     )
 
 
@@ -176,10 +192,12 @@ def _classify_defender_state(state: DefenderState) -> Tuple[str, str, str]:
 
     Returns:
         (status, summary, details)
-    """
-    # Build human-readable details
-    detail_lines = []
 
+    Note: unit tests expect specific wording in summary/details.
+    """
+    detail_lines: list[str] = []
+
+    # Always include local/policy interpretation if we have it, regardless of data_source.
     if state.disabled_local is True:
         detail_lines.append("- Local setting: real-time protection is DISABLED.")
     elif state.disabled_local is False:
@@ -194,6 +212,12 @@ def _classify_defender_state(state: DefenderState) -> Tuple[str, str, str]:
     else:
         detail_lines.append("- Policy: real-time protection policy status is UNKNOWN.")
 
+    # Optional metadata (nice to have)
+    if getattr(state, "data_source", None):
+        detail_lines.append(f"- Data source: {state.data_source}")
+    if getattr(state, "error", None):
+        detail_lines.append(f"- Error: {state.error}")
+
     details = "\n".join(detail_lines)
 
     # Classification logic
@@ -206,28 +230,29 @@ def _classify_defender_state(state: DefenderState) -> Tuple[str, str, str]:
             "Microsoft Defender real-time protection appears to be turned OFF. "
             "This makes it easier for malware to run without being noticed."
         )
-    elif any_enabled_hint:
+        return status, summary, details
+
+    if any_enabled_hint:
         status = "OK"
         summary = (
             "Microsoft Defender real-time protection appears to be turned ON "
             "(it is not marked as disabled in local or policy settings)."
         )
-    else:
-        status = "UNKNOWN"
-        summary = (
-            "GuardDog could not find clear settings for Microsoft Defender real-time protection. "
-            "This can happen if another antivirus product is managing protection, or if this "
-            "Windows version stores these settings differently."
-        )
+        return status, summary, details
 
+    status = "UNKNOWN"
+    summary = (
+        "GuardDog could not find clear settings for Microsoft Defender real-time protection. "
+        "This can happen if another antivirus product is managing protection, or if this "
+        "Windows version stores these settings differently."
+    )
     return status, summary, details
+
 
 
 def run():
     """
-    Run the Defender check and return a standardized result dict.
-
-    Schema:
+    Run the Defender check and return:
         id, title, status, summary, details, remediation
     """
     try:
@@ -241,31 +266,23 @@ def run():
             "summary": "GuardDog could not read the Microsoft Defender settings due to an internal error.",
             "details": f"Error: {exc!r}",
             "remediation": (
-                "You can open the Windows Security app, go to 'Virus & threat protection', and "
-                "check whether real-time protection is turned on."
+                "Open Windows Security → 'Virus & threat protection' and check whether real-time protection is on."
             ),
         }
 
-    # Remediation guidance based on status
     if status == "OK":
         remediation = (
-            "No action needed. Microsoft Defender real-time protection appears to be enabled. "
-            "You can confirm this in the Windows Security app under 'Virus & threat protection'."
+            "No action needed. You can confirm this in Windows Security → 'Virus & threat protection'."
         )
     elif status == "HIGH":
         remediation = (
-            "Open the Windows Security app, go to 'Virus & threat protection', choose "
-            "any link such as 'Manage settings' or 'Virus & threat protection settings', and make "
-            "sure real-time or always-on protection is turned ON. If you use another antivirus "
-            "product, check that it is active and up to date."
+            "Open Windows Security → 'Virus & threat protection' → 'Manage settings' and turn real-time protection ON. "
+            "If you use another antivirus product, confirm it is active and up to date."
         )
-    else:  # UNKNOWN
+    else:
         remediation = (
-            "GuardDog could not clearly read the Defender real-time protection settings. "
-            "Open the Windows Security app, go to 'Virus & threat protection', and look for links "
-            "such as 'Manage settings' or 'Virus & threat protection settings'. Check whether "
-            "real-time or always-on protection is turned on. If another antivirus product is "
-            "installed, open that product's settings and confirm that its real-time protection is active."
+            "GuardDog could not clearly read Defender’s status. Open Windows Security → 'Virus & threat protection' "
+            "and confirm real-time protection (or another antivirus product) is active."
         )
 
     return {

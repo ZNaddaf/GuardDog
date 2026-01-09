@@ -1,7 +1,10 @@
 """Firewall status checks (Windows Defender Firewall).
 
-This check uses the built-in `netsh advfirewall show allprofiles` command
-to determine whether the firewall is enabled for each profile.
+Primary method:
+- netsh advfirewall show allprofiles (best effort, but locale-dependent)
+
+Fallback method:
+- Registry reads for EnableFirewall under FirewallPolicy profile keys (locale-agnostic)
 
 - Non-admin.
 - Read-only.
@@ -10,51 +13,47 @@ to determine whether the firewall is enabled for each profile.
 
 from __future__ import annotations
 
+import os
 import subprocess
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
+
+import winreg
 
 
-def _run_netsh_allprofiles() -> str:
+_NETSH_PATH = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "netsh.exe")
+
+
+def _run_netsh_allprofiles(timeout_seconds: int = 8) -> str:
     """
-    Run `netsh advfirewall show allprofiles` and return its stdout as text.
+    Run `netsh advfirewall show allprofiles` and return stdout as text.
 
-    If the command fails, raises RuntimeError.
+    - Uses absolute path to netsh.exe to reduce binary-hijack risk.
+    - Uses a timeout to avoid hangs.
     """
-    # `text=True` -> return string; `errors="ignore"` -> avoid crashes on weird encoding.
     proc = subprocess.run(
-        ["netsh", "advfirewall", "show", "allprofiles"],
+        [_NETSH_PATH, "advfirewall", "show", "allprofiles"],
         capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="ignore",
+        text=True,                  # use system default encoding for this host
+        errors="replace",
+        timeout=timeout_seconds,
+        stdin=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"netsh advfirewall failed with code {proc.returncode}: {proc.stderr.strip()}")
+        raise RuntimeError(
+            f"netsh advfirewall failed with code {proc.returncode}: {proc.stderr.strip()}"
+        )
     return proc.stdout
 
 
 def _parse_netsh_allprofiles(output: str) -> Dict[str, str]:
     """
-    Parse the output of `netsh advfirewall show allprofiles`.
+    Parse netsh output for firewall State lines (English only).
 
-    Returns a dict mapping profile name -> state string ("ON", "OFF", or other).
-
-    Example expected patterns (English):
-
-        Domain Profile Settings:
-            State                                 ON
-
-        Private Profile Settings:
-            State                                 OFF
-
-        Public Profile Settings:
-            State                                 ON
-
-    We keep parsing fairly forgiving and case-insensitive, but note this is
-    language/locale-dependent. For MVP we assume an English-ish environment.
+    Returns profile -> state ("ON"/"OFF"/other).
     """
     profiles: Dict[str, str] = {}
-    current_profile: str | None = None
+    current_profile: Optional[str] = None
 
     for raw_line in output.splitlines():
         line = raw_line.strip()
@@ -63,7 +62,6 @@ def _parse_netsh_allprofiles(output: str) -> Dict[str, str]:
 
         lower = line.lower()
 
-        # Detect start of each profile section
         if "domain profile settings" in lower:
             current_profile = "domain"
             continue
@@ -77,119 +75,144 @@ def _parse_netsh_allprofiles(output: str) -> Dict[str, str]:
         if current_profile is None:
             continue
 
-        # Look for the "State" line within the current profile block
         if lower.startswith("state"):
-            # Example: "State                                 ON"
             parts = line.split()
-            # parts[0] is "State", last token is usually "ON"/"OFF"
             if len(parts) >= 2:
-                state = parts[-1].upper()
-                profiles[current_profile] = state
-            # Don't `continue`; no more processing in this line anyway.
+                profiles[current_profile] = parts[-1].upper()
 
     return profiles
 
 
-def _classify_firewall_status(profile_states: Dict[str, str]) -> Tuple[str, str, str]:
-    """
-    Given profile->state mapping, decide check status and build summary+details.
+def _read_reg_dword(root, path: str, name: str) -> Optional[int]:
+    try:
+        with winreg.OpenKey(root, path, 0, winreg.KEY_READ) as key:
+            value, vtype = winreg.QueryValueEx(key, name)
+            if vtype == winreg.REG_DWORD:
+                return int(value)
+    except OSError:
+        return None
+    return None
 
-    Returns a tuple: (status, summary, details)
+
+def _registry_firewall_states() -> Dict[str, str]:
     """
+    Read firewall enabled state from registry.
+
+    Prefer policy locations when present (common on managed systems),
+    otherwise fall back to current control set.
+
+    Returns profile -> "ON"/"OFF"/"UNKNOWN".
+    """
+    result: Dict[str, str] = {}
+
+    # Policy path (can override/represent enforced settings)
+    policy_base = r"SOFTWARE\Policies\Microsoft\WindowsFirewall"
+    policy_profiles = {
+        "domain": policy_base + r"\DomainProfile",
+        "private": policy_base + r"\PrivateProfile",
+        "public": policy_base + r"\PublicProfile",
+    }
+
+    # Non-policy operational path
+    ops_base = r"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy"
+    ops_profiles = {
+        "domain": ops_base + r"\DomainProfile",
+        "private": ops_base + r"\StandardProfile",  # StandardProfile corresponds to "Private" historically
+        "public": ops_base + r"\PublicProfile",
+    }
+
+    for profile in ("domain", "private", "public"):
+        enabled = _read_reg_dword(winreg.HKEY_LOCAL_MACHINE, policy_profiles[profile], "EnableFirewall")
+        if enabled is None:
+            enabled = _read_reg_dword(winreg.HKEY_LOCAL_MACHINE, ops_profiles[profile], "EnableFirewall")
+
+        if enabled is None:
+            result[profile] = "UNKNOWN"
+        elif enabled == 1:
+            result[profile] = "ON"
+        elif enabled == 0:
+            result[profile] = "OFF"
+        else:
+            result[profile] = f"UNKNOWN({enabled})"
+
+    return result
+
+
+def _classify_firewall_status(profile_states: Dict[str, str]) -> Tuple[str, str, str]:
     if not profile_states:
         return (
             "UNKNOWN",
             "GuardDog could not read the firewall status.",
-            "The `netsh advfirewall show allprofiles` output was empty or unrecognized.",
+            "No firewall status data was available.",
         )
 
-    any_off = False
-    any_on = False
-    unknown_profiles = []
+    any_off = any(state == "OFF" for state in profile_states.values())
+    any_unknown = any(state.startswith("UNKNOWN") for state in profile_states.values())
+    all_on = all(state == "ON" for state in profile_states.values())
 
-    for profile, state in profile_states.items():
-        if state == "ON":
-            any_on = True
-        elif state == "OFF":
-            any_off = True
-        else:
-            unknown_profiles.append((profile, state))
+    detail_lines = [f"- {p.title()} profile: {profile_states.get(p, 'UNKNOWN')}" for p in ("domain", "private", "public")]
+    details = "\n".join(detail_lines)
 
-    # Build a human-readable details string.
-    detail_lines = []
-    for profile in ("domain", "private", "public"):
-        if profile in profile_states:
-            state = profile_states[profile]
-            detail_lines.append(f"- {profile.title()} profile: {state}")
-    if unknown_profiles:
-        detail_lines.append("")
-        detail_lines.append("Some firewall states could not be interpreted reliably.")
-
-    details = "\n".join(detail_lines) if detail_lines else ""
-
-    # Classification
     if any_off:
-        status = "HIGH"
-        summary = (
-            "Windows Firewall is turned OFF for at least one network profile. "
-            "This makes it easier for other devices on the network to reach this computer."
+        return (
+            "HIGH",
+            "Windows Firewall is turned OFF for at least one network profile.",
+            details,
         )
-    elif any_on and not unknown_profiles:
-        status = "OK"
-        summary = "Windows Firewall is turned ON for all network profiles reported by Windows."
-    elif any_on:
-        status = "WARN"
-        summary = (
-            "Windows reported the firewall as ON for some profiles, but at least one profile "
-            "could not be interpreted cleanly."
+    if all_on:
+        return (
+            "OK",
+            "Windows Firewall is turned ON for all network profiles.",
+            details,
         )
-    else:
-        status = "WARN"
-        summary = (
-            "GuardDog could not confirm that Windows Firewall is turned ON. "
-            "This does not necessarily mean it is off, but it is worth checking."
+    if any_unknown:
+        return (
+            "WARN",
+            "GuardDog could not verify the firewall state for every profile.",
+            details,
         )
-
-    return status, summary, details
+    return (
+        "WARN",
+        "GuardDog could not confirm that Windows Firewall is turned on for all profiles.",
+        details,
+    )
 
 
 def run():
     """
-    Run the firewall check and return a standardized result dict.
-
-    Schema:
+    Run the firewall check and return a standardized result dict:
         id, title, status, summary, details, remediation
     """
+    title = "Windows Firewall"
+
+    # Try netsh first (nice output when it works), then fallback to registry for widest net.
+    profile_states: Dict[str, str] = {}
+    netsh_error: Optional[str] = None
+
     try:
         output = _run_netsh_allprofiles()
         profile_states = _parse_netsh_allprofiles(output)
-        status, summary, details = _classify_firewall_status(profile_states)
     except Exception as exc:  # noqa: BLE001
-        return {
-            "id": "firewall",
-            "title": "Windows Firewall",
-            "status": "UNKNOWN",
-            "summary": "GuardDog could not read the firewall status due to an internal error.",
-            "details": f"Error: {exc!r}",
-            "remediation": (
-                "You can open the Windows Security app, go to 'Firewall & network protection', "
-                "and check that the firewall is turned on for all network types."
-            ),
-        }
+        netsh_error = repr(exc)
 
-    # User-facing remediation guidance based on status
+    if not profile_states:
+        profile_states = _registry_firewall_states()
+
+    status, summary, details = _classify_firewall_status(profile_states)
+
+    if netsh_error:
+        details = (details + "\n\n" + f"(Note: netsh parsing failed; used registry fallback. Error: {netsh_error})").strip()
+
+    remediation = (
+        "Open the Windows Security app → 'Firewall & network protection' and make sure the firewall is ON "
+        "for Domain, Private, and Public networks."
+    )
     if status == "OK":
-        remediation = "No action needed. Windows Firewall is turned on for all reported network profiles."
-    else:
-        remediation = (
-            "Open the Windows Security app, go to 'Firewall & network protection', and make sure "
-            "the firewall is turned on for Domain, Private, and Public networks. If you are not sure, "
-            "you can ask a trusted IT person to help with this."
-        )
+        remediation = "No action needed. Windows Firewall appears to be ON for all profiles."
 
     return {
         "id": "firewall",
-        "title": "Windows Firewall",
+        "title": title,
         "status": status,
         "summary": summary,
         "details": details,
